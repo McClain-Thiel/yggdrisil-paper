@@ -1,0 +1,29 @@
+# Local LaTeX build output
+/build/
+/main.pdf
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+
+# Local Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# OS/editor noise
+.DS_Store
+*.swp
+
+# Figure PDFs are paper assets and are intentionally tracked.
