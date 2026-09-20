@@ -1,0 +1,3 @@
+[tool.marimo.experimental]
+rtc_v2 = true
+external_agents = true
