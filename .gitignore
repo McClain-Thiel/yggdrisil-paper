@@ -20,6 +20,7 @@
 .venv/
 __pycache__/
 __marimo__/
+runs/
 *.py[cod]
 .ruff_cache/
 
