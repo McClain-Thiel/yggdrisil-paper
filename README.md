@@ -28,6 +28,20 @@ Put finished figure assets in `figures/` and commit them, including figure PDFs.
 Keep all executable utilities in `code/`; see `code/README.md` for conventions.
 Tables can live directly in the section that uses them until separate files help.
 
+## Interactive notebook
+
+`notebooks/pair.py` contains the working tutorial, the backpack search example,
+and the draft genome-minimization and related-work sections. Its inline
+dependencies pin marimo and the tested Yggdrisil commit.
+
+```sh
+uv run --no-project --with marimo==0.24.2 marimo edit --sandbox notebooks/pair.py
+```
+
+To execute it as a script, use `uv run --script notebooks/pair.py`. Each search
+writes a fresh SQLite graph under `notebooks/runs/`, which is ignored by Git.
+The illustrative LLM policy is not executed and requires no provider credentials.
+
 ## Build locally
 
 Requires a LaTeX distribution with pdfLaTeX and latexmk. Run from the repository root:
