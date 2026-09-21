@@ -625,15 +625,15 @@ def _(mo):
     mo.md(r"""
     ## Minimizing E. coli
 
-    For a more realistic use case, let's think about minimizing an E. coli genome. You can start with something to be optimized; let's say we start with MG1655. Then we want to minimize the genome ([why?](https://link.springer.com/chapter/10.1007/978-981-19-7911-8_2)). We can define a root node "state" as the full MG1655 genome (represented here as a set of genes). To optimize, we can think about what genes we want to delete, then define each set of genes to delete as an action on an edge, and each resulting genome as another state node.
+    For a more realistic use case, let's think about minimizing an E. coli genome. You can start with something to be optimized; let's say we start with MG1655. Then we want to minimize the genome ([why?](https://link.springer.com/chapter/10.1007/978-981-19-7911-8_2)). We can define the root node as the full MG1655 genome. In the experiment code, each state records the set of genes deleted from that reference, so the root has an empty deletion set. To optimize, we can think about what genes we want to delete, then define each set of genes to delete as an action on an edge, and each resulting genome as another state node.
 
-    For this simplified task, an action deletes a gene or set of genes (up to 20 per transition). We can define the objective as minimizing the number of genes, subject to not killing the cell (as defined by maintaining growth above a chosen threshold).
+    For the 20-gene-capped experiments described below, an action deletes a gene or set of genes, up to 20 per transition. The objective is to minimize the number of remaining genes while passing a model-based growth gate. In the reference arm, that means positive FBA growth and RBA feasibility at a growth floor of 0.1 h⁻¹.
 
     This is where the framework and agent earn their pay. Genome minimization, as you might expect, is a much harder task for several reasons. Biology is filled with complex networks of genes, and the effects of combining deletions can be hard to predict. Some single-gene deletions are lethal under the chosen growth conditions. Other deletions are tolerated individually but become lethal in combination, a phenomenon known as synthetic lethality. This means that genes we can delete separately cannot always be deleted together. [Côté et al. (2016)](https://doi.org/10.1128/mBio.01714-16) provide an E. coli example of these genetic interactions.
 
     We need to be able to navigate this network of candidate states (combinations of genes) and evaluate which combinations might be viable (model predictions alone cannot establish viability in a living cell) and which are not. As in the backpack example, a candidate can be a valid state representation even if it fails the viability evaluation.
 
-    Evaluations are noisy, and even a good model is an imperfect proxy for a living cell. We'll come back to this. The total number of combinations is also absolutely massive: $n$ genes give $2^n$ possible subsets. For scale, taking approximately $n = 4{,}200$ protein-coding genes gives roughly $2.1 \times 10^{1264}$ subsets. The precise gene count depends on the annotation, and the actual search space depends on which genes we allow ourselves to delete. Brute-force exploration is infeasible at this scale. Existing algorithms tackle the problem using heuristics and models; we want to test whether agent-guided search can make better use of a limited evaluation budget.
+    Experimental measurements can be noisy, and even a deterministic model is an imperfect proxy for a living cell. We'll come back to this. The total number of combinations is also absolutely massive: $n$ genes give $2^n$ possible subsets. For scale, taking approximately $n = 4{,}200$ protein-coding genes gives roughly $2.1 \times 10^{1264}$ subsets. The precise gene count depends on the annotation, and the actual search space depends on which genes we allow ourselves to delete. Brute-force exploration is infeasible at this scale. Existing algorithms tackle the problem using heuristics and models; we want to test whether agent-guided search can make better use of a limited evaluation budget.
 
     ### Related work
 
@@ -661,11 +661,15 @@ def _(mo):
 
     A few things, I think. I'll dive into the specifics throughout the rest of this report, but:
 
-    * Understanding how agents reason — we run some interesting experiments that have some surprising results. This helps us understand how agents reason.
+    * Understanding how agents reason — we run some interesting experiments that have some surprising results. This helps us understand how agents think.
     * Benchmarking proposal policies — in this framework, a policy can be just about anything. It's interesting to benchmark LLMs, simple algorithms, and other models on a new kind of task.
     * The framework itself — this framework is open source and makes it straightforward to implement similar state search problems.
 
     ### Framing the Problem
+
+    Using the same building blocks as the dungeon example, we can lay out the minimal E. coli problem. The walkthrough below follows the experiment implementation in [`yggdrisil-minimal-ecoli`](https://github.com/McClain-Thiel/yggdrisil-minimal-ecoli/tree/ea8f948862f7047f41364152977779743a43661e). We describe the reference search, which uses two growth checks: flux balance analysis (FBA) and resource balance analysis (RBA). Both are explained below.
+
+    The Python-style pseudocode below keeps the experiment's main logic and leaves out type annotations, validation details, and storage plumbing. Helper names describe operations rather than actual library APIs. These blocks are for explanation and are not executed here. Full runs require the application's model and data dependencies; LLM-based runs also require an API key.
     """)
     return
 
@@ -674,9 +678,9 @@ def _(mo):
 def _(mo):
     mo.mermaid("""
     flowchart TD
-        root(("Full MG1655<br/>genome"))
-        a(("Genome<br/>minus A"))
-        ab(("Genome<br/>minus A and B"))
+        root(("Full MG1655<br/>D = ∅"))
+        a(("Genome minus A<br/>D = A"))
+        ab(("Genome minus A and B<br/>D = A ∪ B"))
         root -->|Delete gene set A| a
         a -->|Delete gene set B| ab
     """)
@@ -684,29 +688,363 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def related_work_sources(mo):
-    mo.accordion({
-        "Related-work sources — saved Notion notes and primary papers": mo.md(r"""
-    This reading list combines papers tagged **Yggdrisil** in the [Literature Repo](https://www.notion.so/60205c251eee4745b338745b8fd39cfc) with the VAE preprint linked during drafting. This is a first selection for the draft, not a complete literature review.
+def ecoli_state_description(mo):
+    mo.md(r"""
+    #### State: which genes have we deleted?
 
-    | Work | Why it belongs here | Saved note | Primary paper |
-    | --- | --- | --- | --- |
-    | Pósfai et al. (2006) | Experimental E. coli genome reduction | [Notion](https://www.notion.so/3ddd0098937c81bc8ff9cb78adaea392) | [Science](https://doi.org/10.1126/science.1126439) |
-    | Côté et al. (2016) | Context-dependent gene essentiality and synthetic lethality | [Notion](https://www.notion.so/3ddd0098937c81d29fa6c59a07f5545b) | [mBio](https://doi.org/10.1128/mBio.01714-16) |
-    | Rees-Garbutt et al. (2020) | Minesweeper and GAMA; computational genome reduction | [Notion](https://www.notion.so/3ddd0098937c817f878cf41c7668283d) | [Nature Communications](https://www.nature.com/articles/s41467-020-14545-0) |
-    | Gherman et al. (2025) | E. coli reduction with a whole-cell model and ML surrogate | [Notion](https://www.notion.so/3ddd0098937c81529398fa7d012789d7) | [Cell Systems](https://doi.org/10.1016/j.cels.2025.101392) |
-    | Shcherbakova et al. (2025), VAE genome design | Learned proposals for reduced E. coli gene sets, evaluated in silico | Added during drafting | [bioRxiv, v2](https://www.biorxiv.org/content/10.1101/2024.10.22.619620v2) |
-    | Jones et al. (1998) | Optimization when evaluations are expensive | [Notion](https://www.notion.so/3ddd0098937c81fd8cf4e9fca8977d3a) | [Journal of Global Optimization](https://doi.org/10.1023/A:1008306431147) |
-    | Angermueller et al. (2020), P3BO | Adaptive allocation across biological sequence optimizers | [Notion](https://www.notion.so/3ddd0098937c815abdfbde061c386560) | [ICML](https://proceedings.mlr.press/v119/angermueller20a.html) |
-    | Zhou et al. (2024), LATS | Agent search with environmental feedback | [Notion](https://www.notion.so/3ddd0098937c8125bd41d8af8cb51937) | [ICML](https://proceedings.mlr.press/v235/zhou24r.html) |
-    | Jiang et al. (2025), AIDE | Tree search over candidate code | [Notion](https://www.notion.so/3dfd0098937c812db947f33d4f97bea2) | [Preprint](https://arxiv.org/abs/2502.13138) |
-    | Yamada et al. (2025), AI Scientist-v2 | Agentic tree search within an automated research workflow | [Notion](https://www.notion.so/3dfd0098937c8190be09f622e51b4594) | [Preprint](https://arxiv.org/abs/2504.08066) |
-    | Maus et al. (2026), PABLO | Close precedent for agent-driven biological optimization | [Notion](https://www.notion.so/3ddd0098937c816593b7d2c51192f7df) | [Preprint, v2](https://arxiv.org/abs/2601.22382v2) |
-    | Chen et al. (2024) | How evaluator quality affects the value of search | [Notion](https://www.notion.so/3dfd0098937c81198360fc88afdcde02) | [ACL](https://aclanthology.org/2024.acl-long.738/) |
+    In the dungeon example, the state was the set of items in the backpack. Here, our universe is the protein-coding genes in MG1655. We can think of a state as the genes we have retained: everything we have not deleted.
 
-    The primary abstracts were checked for the broad summaries above, with additional method passages checked for Minesweeper/GAMA, Gherman's surrogate, and PABLO. The VAE summary is based on the linked v2 abstract. Detailed architecture comparisons remain to be developed.
+    The experiments store the equivalent **set of deleted genes**. Given the reference genome, either representation tells us the other. An empty deletion set therefore represents the root, the full MG1655 genome.
+
+    We use `b` locus tags, such as `b0001`, as gene IDs. A frozen set makes deletion order irrelevant: deleting A then B reaches the same state as deleting B then A. Some experiments restrict which genes are eligible for deletion; genes outside that candidate set remain present.
     """)
-    })
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_state_code(mo):
+    mo.md(r"""
+    ```python
+    all_genes = load_mg1655_gene_ids()
+    candidate_genes = load_candidate_gene_ids()
+    initial_state = frozenset()  # No deletions yet.
+
+    def retained_genes(deleted):
+        return all_genes - deleted
+    ```
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_objective_description(mo):
+    mo.md(r"""
+    #### Objective: how small can we make it while passing the growth checks?
+
+    The objective is simple: delete as many genes as possible while keeping the cell viable. Deleting genes is easy; deciding whether the cell could still grow is the interesting part.
+
+    In the experiments, we approximate this with the FBA and RBA checks explained below. Among candidates passing both checks, we prefer more deletions, then higher FBA growth. The code keeps these measurements separate rather than combining everything into one weighted score. A model passing these checks still needs biological validation.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_objective_code(mo):
+    mo.md(r"""
+    ```python
+    def passes_growth_checks(evidence):
+        fba = evidence["fba"]
+        rba = evidence["rba"]
+        return (
+            fba["solver_status"] == "optimal"
+            and fba["growth_rate"] > 0
+            and rba["feasible_at_growth_floor"]
+        )
+
+    def candidate_rank(deleted, evidence):
+        return len(deleted), evidence["fba"]["growth_rate"]
+    ```
+
+    We rank only candidates that pass the checks. The full reporting code uses a stable state ID to break any remaining ties. The `fba-only` ablation omits the RBA requirement but still records its result.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_action_description(mo):
+    mo.md(r"""
+    #### Action: which additional genes should we delete?
+
+    The action space is absolutely massive. We let the policy, which may be an agent or a simpler algorithm, choose a combination of genes that are still present and eligible for deletion.
+
+    For the experiments described here, each action deletes between 1 and 20 genes. A policy step can propose several such actions. Keeping actions small lets us test changes incrementally; recovery comes from returning to a good parent and trying a different or smaller bundle after a failed child.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_action_code(mo):
+    mo.md(r"""
+    ```python
+    available = candidate_genes - deleted
+
+    action = choose_deletions(
+        available,
+        min_genes=1,
+        max_genes=20,
+    )
+    ```
+
+    Each action contains distinct genes. Fixed-size baseline arms request the maximum bundle size; variable-size arms can choose fewer.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_transition_description(mo):
+    mo.md(r"""
+    #### Transition: apply the deletion
+
+    This is simple: apply the new deletions to the state. Conceptually, we remove genes from the retained genome. Because we store deletions, the code adds them to the deletion set.
+
+    The problem checks that an action contains 1–20 eligible genes that have not already been deleted. For a valid action, the transition is just the set union below. Like an overweight backpack, a genome that fails a growth check is still recorded. Evaluation tells the policy whether to expand it.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_transition_code(mo):
+    mo.md(r"""
+    ```python
+    def apply(deleted, action):
+        return deleted.union(action)
+    ```
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_policy_description(mo):
+    mo.md(r"""
+    #### Policy and proposal: where do we try next?
+
+    A policy chooses a parent state and proposes additional deletions. The agent version uses a deterministic scheduler to choose parents, then an LLM explorer to propose actions using the available evidence and previous outcomes. Random and heuristic baselines replace those choices with simpler rules.
+
+    The important recovery behavior is that a good parent remains available after a failed child. We can return to it and try different genes or a smaller deletion bundle. We do not undo deletions inside the failed child.
+
+    Each proposal pairs a parent with one action. In closed-book experiments, the model sees opaque gene labels; the saved states still use canonical gene IDs.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_policy_code(mo):
+    mo.md(r"""
+    ```python
+    def propose_next(graph):
+        parents = [
+            node for node in graph.states
+            if passes_growth_checks(node.evidence)
+        ]
+        if not parents:
+            return []
+
+        parent = scheduler.choose(parents, history=graph.history)
+        available = candidate_genes - parent.deleted_genes
+        actions = explorer.propose(
+            parent,
+            available_genes=available,
+            max_genes=20,
+            history=graph.history,
+        )
+        return [(parent, action) for action in actions]
+    ```
+
+    This sketches the agent policy. The scheduler balances promising states with diversity and previous attempts; it can select parents that already have children.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_runner_description(mo):
+    mo.md(r"""
+    #### Runner, graph, and limits: put the pieces together
+
+    The runner evaluates the root, asks the policy for proposals, applies them, and evaluates the resulting states. It saves the states, transitions, measurements, and decision history in the graph. Different deletion orders can reuse the same state and cached measurements.
+
+    We set limits on unique states, policy steps, and optionally wall time. The root counts as a state. LLM calls have additional limits on requests, tool use, tokens, and cost. The sketch below shows the main loop; the implementation also handles retries, interrupted runs, and checks that saved results match the current configuration.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_runner_code(mo):
+    mo.md(r"""
+    ```python
+    graph.add_state(initial_state)
+    graph.evaluate_cached(initial_state, evaluators)
+
+    for step in range(max_steps):
+        if state_or_time_limit_reached(graph):
+            break
+
+        proposals = propose_next(graph)
+        if not proposals:
+            break
+
+        for parent, action in proposals:
+            if state_or_time_limit_reached(graph):
+                break
+
+            child = apply(parent.deleted_genes, action)
+            graph.add_transition(parent, action, child)
+            graph.evaluate_cached(child, evaluators)
+
+    ```
+
+    Every valid proposed child is recorded, including those that fail growth checks. Subsequent parent selection uses the saved evidence. The implementation also has explicit retry and logging rules for empty responses and provider failures.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def ecoli_evaluators(mo):
+    mo.md(r"""
+    ### Evaluators: what do we know about this candidate?
+
+    The backpack needed weight and value. For a genome, we need several different kinds of evidence. We record five measurements: how much we removed, what experiments say about those genes, which annotated functions remain, and whether two mechanistic models predict growth.
+
+    An **evaluator** takes a candidate genome and returns measurements. Only the FBA and RBA results determine whether a parent passes the reference search's growth checks. Essentiality and module retention provide additional evidence that a policy can use when choosing what to try.
+
+    #### Genome size: how much have we removed?
+
+    Here, “size” means the **number of protein-coding genes** remaining in the reference registry. An annotation identifies genes and their positions in a genome; our registry takes these from the MG1655 reference annotation. The original K-12 genome sequence is described by [Blattner et al. (1997)](https://doi.org/10.1126/science.277.5331.1453).
+
+    This evaluator simply counts the deletion set and subtracts it from the reference gene count. It counts a short gene and a long gene equally, so it measures gene reduction rather than DNA length. It says nothing about whether the resulting cell can grow.
+
+    In the experiment snapshot, the full registry has 4,290 genes. The WCM comparison permits deletions from a 1,216-gene subset, but the remaining-gene count still starts from the full registry. Genes outside that subset have not disappeared.
+
+    ```python
+    def measure_size(deleted):
+        return {
+            "genes_deleted": len(deleted),
+            "genes_remaining": len(all_genes - deleted),
+        }
+    ```
+
+    #### Essentiality: what happens when these genes are disrupted experimentally?
+
+    An **essential gene** is required for growth under specified conditions. Conditions matter: a cell may need a gene to make a nutrient in minimal medium, but tolerate its loss when that nutrient is supplied.
+
+    We use the experimental calls in Table S1 of [Choe et al. (2023)](https://doi.org/10.1128/msystems.00896-22). Their **transposon insertion sequencing**, or **Tn-seq**, experiment inserts DNA into many genomic positions and sequences the surviving population. A shortage of insertions within a gene can suggest that disrupting it harms growth. The paper also investigates false calls, including cases where DNA-binding proteins prevent insertion.
+
+    The dataset compares **LB**, a rich growth medium, with **M9 glucose**, a defined minimal medium. Our application summarizes the two calls as follows; these are the application's labels, not universal biological categories:
+
+    | Label | Call in LB | Call in M9 glucose |
+    | --- | --- | --- |
+    | Essential | Essential | Essential |
+    | Conditionally essential | Nonessential | Essential |
+    | Nonessential | Nonessential | Nonessential |
+    | Ambiguous | Essential | Nonessential |
+    | Unknown | No matched measurement | No matched measurement |
+
+    We count deleted genes in each category and retain their identities. “Unknown” means missing evidence. Even a nonessential call does not guarantee that a gene can be deleted safely alongside other genes: combinations can be synthetically lethal. These classifications inform the search but are not a blanket deletion ban.
+
+    ```python
+    from collections import Counter
+
+    def measure_essentiality(deleted):
+        labels = [essentiality_table[gene] for gene in deleted]
+        return dict(Counter(labels))
+    ```
+
+    The table includes an `unknown` entry for genes without a matched measurement. This sketch shows the counts; the experiment also saves the genes in each category.
+
+    #### Module retention: do we still encode the pieces of a biological function?
+
+    **KEGG**, the Kyoto Encyclopedia of Genes and Genomes, organizes biological knowledge into pathways and other functional descriptions. A **KEGG module** is a smaller unit, such as the reactions needed to make a particular compound or the components of a molecular complex. [Takami et al. (2012)](https://doi.org/10.1186/1471-2164-13-699) describe using modules to infer functional capacity from gene sets.
+
+    Genes are mapped to **KEGG Orthology (KO)** identifiers: labels for molecular functions. Several genes can support the same KO. A module then specifies which functions are required using **AND** and **OR** rules, with optional components where appropriate. For example, `(A OR B) AND C` needs either function A or B, plus function C. See the official [KO definitions](https://www.genome.jp/kegg/ko.html) and [module completeness rules](https://www.genome.jp/kegg/module.html).
+
+    We first identify modules that are complete in the undeleted reference, then check which become incomplete after deletion. The result records retained and broken modules, plus missing required functions. Fixed background annotations remain available alongside the functions encoded by retained genes.
+
+    This is an annotation-based check: it asks whether the required pieces are encoded, not whether a pathway actually carries enough material to support growth. Missing annotations are reported as coverage gaps, and a broken module is evidence for the policy rather than an automatic declaration of lethality.
+
+    ```python
+    def measure_modules(deleted):
+        remaining = all_genes - deleted
+        functions = functions_present(remaining, background_annotations)
+
+        broken = []
+        for module in reference_complete_modules:
+            if not module.requirements_met(functions):
+                broken.append(module)
+
+        return {
+            "n_complete": len(reference_complete_modules) - len(broken),
+            "broken_modules": broken,
+        }
+    ```
+
+    `requirements_met` stands for the module’s AND/OR logic, not a percentage-of-genes threshold.
+
+    #### FBA: can the metabolic network produce biomass?
+
+    **Flux balance analysis (FBA)** asks how material can flow through a network of biochemical reactions. A **metabolite** is a molecule consumed or produced by those reactions, and a **flux** is a reaction's rate. FBA assumes a steady state: production and consumption of each internal metabolite balance. Nutrient uptake and reaction bounds restrict the allowed flows. A numerical solver finds flows satisfying these constraints while optimizing a chosen objective. [Orth, Thiele, and Palsson (2010)](https://doi.org/10.1038/nbt.1614) give an introduction.
+
+    For growth, the objective is a **biomass reaction**: a bookkeeping reaction that consumes the building blocks needed to make cellular material in specified proportions. Its flux serves as the model's predicted specific growth rate, in inverse hours. It is a mathematical representation of growth, rather than a simulation of an individual cell dividing. See [Feist and Palsson (2010)](https://doi.org/10.1016/j.mib.2010.03.003).
+
+    We use **iML1515**, an E. coli metabolic reconstruction linking genes, proteins, and reactions, with an aerobic M9/glucose medium. **Gene–protein–reaction rules** describe which genes support each reaction: an enzyme complex may need multiple genes together, while alternative enzymes can provide redundancy. Deleting genes disables reactions according to those rules, after which the model is solved again. The reconstruction is described by [Monk et al. (2017)](https://doi.org/10.1038/nbt.3956).
+
+    We record the predicted growth rate and **solver status**, which tells us whether the optimization succeeded. An optimal solution can still have zero growth, so the search requires both an optimal solve and positive biomass flux. We also record **coverage**: which deleted genes occur in the model. A gene outside iML1515 can have important functions that this evaluator cannot assess.
+
+    ```python
+    def measure_fba(deleted):
+        model = iml1515.copy()
+        modeled, unmodeled = split_by_model_coverage(deleted, model)
+
+        model.set_medium(aerobic_m9_glucose)
+        model.knock_out_genes(modeled)
+        solution = model.maximize_biomass()
+
+        return {
+            "growth_rate": solution.growth_rate,
+            "solver_status": solution.status,
+            "unmodeled_deletions": unmodeled,
+        }
+    ```
+
+    `knock_out_genes` applies the gene–protein–reaction rules. The model is copied so one candidate’s deletions do not change the next candidate’s starting model.
+
+    #### RBA: can the cell build and maintain the machinery needed for growth?
+
+    **Resource balance analysis (RBA)** adds constraints on the machinery that carries out cellular processes. Metabolic reactions require enough **enzymes** to support their fluxes. Making those enzymes requires **ribosomes**, which synthesize proteins, and supporting processes such as **chaperoning**, which helps proteins fold, and **secretion**, which transports proteins. The model also limits how much machinery fits into cellular compartments and how the cell allocates its **proteome**, its complement of proteins. These requirements compete for finite resources. See the [RBA overview](https://rba.inrae.fr/overview.html) and [Bulović et al. (2019)](https://doi.org/10.1016/j.ymben.2019.06.001).
+
+    Our evaluator uses the E. coli K-12 RBA model from that work. A deletion disables the modeled enzymes and process machinery requiring the corresponding protein. We then ask whether the remaining system can support **balanced growth**: sustained growth with a consistent cellular composition, including enough production to replenish its machinery. The mathematical constraints are described in the [RBA theory guide](https://rba.inrae.fr/theory.html).
+
+    The experiment tests a fixed **growth floor** of **0.1 h⁻¹**. This means asking whether the model can sustain that specific growth rate, rather than searching for each candidate's maximum rate. The floor is an experiment setting, not a universal boundary between living and dead cells.
+
+    The result reports feasibility at that floor, modeled and unmodeled deletions, and solver diagnostics. RBA covers processes that ordinary FBA leaves out, but it still models only part of the cell. Passing both checks is evidence for a candidate worth studying further, not confirmation that it will divide experimentally.
+
+    ```python
+    def measure_rba(deleted):
+        model = rba_reference.copy()
+        modeled, unmodeled = split_by_model_coverage(deleted, model)
+
+        model.disable_protein_machines(modeled)
+        solution = model.check_growth(rate=0.1)
+
+        return {
+            "feasible_at_growth_floor": solution.feasible,
+            "solver_status": solution.status,
+            "unmodeled_deletions": unmodeled,
+        }
+    ```
+
+    The model keeps its configured medium and resource constraints. A numerical solver error is a failed computation, not evidence that the genome is lethal; the experiment records diagnostics and raises unresolved errors.
+
+    #### Keep the evidence together, without collapsing it into one score
+
+    Each evaluator returns a different view of the same candidate. The experiment saves those measurements with **coverage** (what was actually assessed) and **provenance** (which data, model, and settings produced the result). A cached result can be reused when the candidate and evaluator configuration match.
+
+    ```python
+    evaluators = {
+        "size": measure_size,
+        "essentiality": measure_essentiality,
+        "modules": measure_modules,
+        "fba": measure_fba,
+        "rba": measure_rba,
+    }
+
+    def evaluate(deleted):
+        return {
+            name: measure(deleted)
+            for name, measure in evaluators.items()
+        }
+    ```
+
+    The short keys here are just for the pseudocode. The growth checks use FBA and RBA; the remaining evidence helps describe and compare candidates. Coverage gaps remain visible even when a candidate passes both models.
+    """)
     return
 
 
